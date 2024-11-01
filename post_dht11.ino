@@ -4,21 +4,33 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <WebServer.h>
+
+WebServer server(80);
 
 //WIFI
-const char *ssid = "robotica";
-const char *password = "12345678";
+const char *ssid = "TI | OAB-MT";
+const char *password = "0@bMT#3@2!1";
 
 //DHT
 #define DHTPIN 26
 #define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
+
 
 //OLED
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define SCREEN_ADDRESS 0x3C
+
+//RFID
+#define SDA_PIN 5
+#define RST_PIN 2
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+DHT dht(DHTPIN, DHTTYPE);
+MFRC522 rfid(SDA_PIN, RST_PIN);
 
 //LOGO DE ADS
 const unsigned char adsLogo[] PROGMEM = {
@@ -87,21 +99,24 @@ const unsigned char adsLogo[] PROGMEM = {
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 };
-
 //PORTA E BUZZER
 #define DOOR 25
 #define DOOR_CLOSE 33
-#define BOTON 19
+#define BOTON 4
 #define BUZZER_PIN 32
 
-//URL DA API
-const char* serverUrl = "http://192.168.43.203:8080/statedata/";
+//URLs DA API
+const char* serverUrlStData = "http://192.168.8.64:8080/statedata/";
+const char* serverUrlAccessData = "http://192.168.8.64:8080/access/";
+const char* postUrl = "http://192.168.8.64:8080/auth/register/rfid/esp/";
 
 //CONTROLE DE TEMPO E BEEP
 unsigned long previousMillis = 0;
+unsigned long previousMillisRfid = 0;
 bool isBeeping = false;
 unsigned long doorOpenTime = 0;
 const long interval = 30000; 
+const long intervalRfid = 50;
 bool doorOpen = false;
 
 //FUNÇÕES DE INICIALIZAÇÃO
@@ -123,8 +138,12 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
 
   dht.begin();
-  initDisplay();
   initWiFi();
+  setupServer();
+  initDisplay();
+
+  SPI.begin();
+  rfid.PCD_Init();
 }
 
 void loop() {
@@ -132,6 +151,9 @@ void loop() {
   checkDoorTimeout();
   sendSensorData();
   reconnectWiFiIfNeeded();
+  monRfid();
+  server.handleClient();
+  processRequest();
 }
 
 //INICIALIZAÇÃO DO OLED
@@ -157,13 +179,13 @@ void initWiFi() {
     Serial.println("Conectando ao WiFi...");
   }
   Serial.println("WiFi conectado!");
+  Serial.print("Endereço IP: ");
+  Serial.println(WiFi.localIP());
 }
 
 
-void singleBeep(){
-  digitalWrite(BUZZER_PIN, HIGH);
-  delay(100);
-  digitalWrite(BUZZER_PIN, LOW);
+void singleBeep() {
+  tone(BUZZER_PIN, 1000, 100);
 }
 
 
@@ -255,7 +277,7 @@ void sendSensorData() {
 
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient http;
-      http.begin(serverUrl);
+      http.begin(serverUrlStData);
       http.addHeader("Content-Type", "application/json");
 
       String jsonData = "{\"temperature\": " + String(temperature) + ", \"humidity\": " + String(humidity) + "}";
@@ -272,6 +294,38 @@ void sendSensorData() {
     } else {
       Serial.println("Erro de conexão WiFi");
     }
+  }
+}
+
+bool sendLogData(String url) {
+  if (WiFi.status() == WL_CONNECTED) {
+      String rfid = readRfid();
+      HTTPClient http;
+      http.begin(url);
+      http.addHeader("Content-Type", "application/json");
+
+      String jsonData = "{\"rfid\": \"" + String(rfid) + "\"}";
+      int httpResponseCode = http.POST(jsonData);
+
+      Serial.println(jsonData);
+      if (httpResponseCode > 0) {
+        String response = http.getString();
+        Serial.println("Resposta do servidor: " + response);
+
+        return (httpResponseCode >= 200 && httpResponseCode < 300);
+      } else {
+        display.clearDisplay();
+        display.setTextSize(2);
+        display.setCursor(16, 24);
+        display.println("NEGADO!");
+        display.display();
+        Serial.println("Erro na requisição POST: " + String(httpResponseCode));
+        return false;
+      }
+      http.end();
+  } else {
+    Serial.println("Erro de conexão WiFi");
+    return false;
   }
 }
 
@@ -300,5 +354,130 @@ void reconnectWiFiIfNeeded() {
       Serial.println("Tentando reconectar ao WiFi...");
     }
     Serial.println("WiFi reconectado!");
+  }
+}
+
+String readRfid(){
+  String rfidData = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) {
+      rfidData += "0";
+    }
+    rfidData += String(rfid.uid.uidByte[i], HEX);
+  }
+  rfid.PICC_HaltA();
+  return rfidData;
+}
+
+void monRfid(){
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillisRfid >= intervalRfid) {
+    previousMillisRfid = currentMillis;
+
+    if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+    return;
+    }
+    if(sendLogData(serverUrlAccessData)){
+      openDoor();
+      printData();
+      singleBeep();
+    } else {
+      float temperature = dht.readTemperature();
+      float humidity = dht.readHumidity();
+      float tmpOrv = (237.7 * (((17.27 * temperature) / (237.7 + temperature)) + 
+                    log(humidity / 100))) / (17.27 - (((17.27 * temperature) / 
+                    (237.7 + temperature)) + log(humidity / 100)));
+
+      if (isnan(temperature) || isnan(humidity)) {
+        Serial.println("Falha ao ler do sensor DHT!");
+        return;
+      }
+      dualBeep();
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.setTextSize(1);
+      display.print("Temp: ");
+      display.print(temperature);
+      display.println(" C");
+      display.print("Umi: ");
+      display.print(humidity);
+      display.println(" %");
+      display.print("Temp_Orv:");
+      display.print(tmpOrv);
+      display.println(" C");
+      display.println();
+      display.setTextSize(2);
+      display.println("NEGADO");
+      display.display();
+    }
+  }
+}
+
+void setupServer() {
+  server.on("/email/", HTTP_POST, processRequest);
+  server.begin();
+  Serial.println("Servidor iniciado e aguardando requisições POST em /email/");
+}
+
+void processRequest() {
+  if (server.hasArg("plain")) {
+    String email = server.arg("plain");
+    Serial.println("Email recebido: " + email);
+
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.setTextSize(2);
+    display.println("APROXIME");
+    display.println("A TAG");
+    display.display();
+
+    unsigned long previusMillis = millis();
+    unsigned long currentMillis;
+    String rfidTag = "";
+ 
+    currentMillis = millis();
+    
+    while ((!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) && (millis() - previusMillis <= 30000)) {
+    }
+
+    if (rfid.PICC_ReadCardSerial()) {
+      rfidTag = readRfid();
+      sendEmailAndRfid(email, rfidTag);
+    } else {
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.setTextSize(2);
+      display.println("NENHUM CARTAO");
+      display.println("DETECTADO!");
+      display.display();
+      Serial.println("Nenhum cartão detectado no tempo limite.");
+      
+      return; 
+    }
+  }
+  
+  server.send(200, "text/plain", "OK");
+}
+
+
+void sendEmailAndRfid(String email, String rfid) {
+  if(WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(postUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    String jsonPayload = "{\"email\": \"" + email + "\", \"rfid\": \"" + rfid + "\"}";
+
+    int httpResponseCode = http.POST(jsonPayload);
+    
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Resposta do servidor: " + response);
+    } else {
+      Serial.println("Erro ao enviar POST: " + String(httpResponseCode));
+    }
+    http.end();
+  } else {
+    Serial.println("Erro: Não conectado ao WiFi");
   }
 }
