@@ -13,6 +13,9 @@
 const char *ssid = "REDE_TEST";
 const char *password = "robotica01";
 bool wifiStatus = false;
+IPAddress local_IP(192, 168, 0, 30);
+IPAddress gateway(192, 168, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
 
 //DHT
 #define DHTPIN 26
@@ -106,9 +109,9 @@ const unsigned char adsLogo[] PROGMEM = {
 #define BUZZER_PIN 32
 
 //URLs DA API
-const char* serverUrlStData = "http://192.168.3.25:8080/statedata/";
-const char* serverUrlAccessData = "http://192.168.3.25:8080/access/";
-const char* postUrl = "http://192.168.3.25:8080/auth/register/rfid/esp/";
+const char* serverUrlStData = "http://192.168.0.25:8080/statedata/";
+const char* serverUrlAccessData = "http://192.168.0.25:8080/access/";
+const char* postUrl = "http://192.168.0.25:8080/auth/register/rfid/esp/";
 
 //CONTROLE DE TEMPO E BEEP
 unsigned long previousMillis = 0;
@@ -154,7 +157,6 @@ void loop() {
   sendSensorData();
   reconnectWiFiIfNeeded();
   monRfid();
-  //server.handleClient();
   processRequest();
 }
 
@@ -176,6 +178,10 @@ void initDisplay() {
 
 //CONECTAR WIFI
 void initWiFi() {
+  if (!WiFi.config(local_IP, gateway, subnet)) {
+    Serial.println("Falha ao configurar IP estático.");
+  }
+
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     handleButtonPress();
