@@ -113,14 +113,15 @@ const char* serverUrlStData = "http://192.168.0.25:8080/statedata/";
 const char* serverUrlAccessData = "http://192.168.0.25:8080/access/";
 const char* postUrl = "http://192.168.0.25:8080/auth/register/rfid/esp/";
 
-//CONTROLE DE TEMPO E BEEP
+//VARIÁVEIS DE CONTROLE
 unsigned long previousMillis = 0;
 unsigned long previousMillisRfid = 0;
-unsigned long previousMillisLock = 0;
+unsigned long daniedTime = 0;
 unsigned long doorOpenTime = 0;
 const long interval = 30000; 
 const long intervalRfid = 50;
 bool doorOpen = false;
+bool printDanied = false;
 
 //FUNÇÕES DE INICIALIZAÇÃO
 void initDisplay();
@@ -128,6 +129,7 @@ void handleButtonPress();
 void checkDoorTimeout();
 void openDoor();
 void closeDoor();
+void monPrinDanied();
 void initWiFi();
 void sendSensorData();
 void reconnectWiFiIfNeeded();
@@ -153,6 +155,7 @@ void setup() {
 
 void loop() {
   handleButtonPress();
+  monPrinDanied();
   checkDoorTimeout();
   sendSensorData();
   reconnectWiFiIfNeeded();
@@ -264,6 +267,9 @@ void displayData(float temperature, float humidity, float tmpOrv){
 }
 
 void printData(){
+  if(printDanied){
+    return;
+  }
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
   float tmpOrv = (237.7 * (((17.27 * temperature) / (237.7 + temperature)) + 
@@ -335,11 +341,6 @@ bool sendLogData(String url) {
 
         return (httpResponseCode >= 200 && httpResponseCode < 300);
       } else {
-        display.clearDisplay();
-        display.setTextSize(2);
-        display.setCursor(16, 24);
-        display.println("NEGADO!");
-        display.display();
         Serial.println("Erro na requisição POST: " + String(httpResponseCode));
         return false;
       }
@@ -411,7 +412,10 @@ void monRfid(){
         Serial.println("Falha ao ler do sensor DHT!");
         return;
       }
+      daniedTime = millis();
+      printDanied = true;
       beepErro();
+      String wifi = "";
       display.clearDisplay();
       display.setCursor(0, 0);
       display.setTextSize(1);
@@ -426,14 +430,24 @@ void monRfid(){
       display.println(" C");
       display.println();
       display.setTextSize(2);
-      display.println("NEGADO");
-      display.display();
-      unsigned long currentMillisLock = millis();
-      if (currentMillisLock - previousMillisLock >= 1000) {
-        previousMillisLock = currentMillisLock;
-        printData();
+      display.println("NEGADO!");
+      if(wifiStatus){
+        wifi = "conectado!";
+      } else {
+        wifi = "desconectado!";
       }
+      display.setTextSize(1);
+      display.println();
+      display.println(wifi);
+      display.display();
     }
+  }
+}
+
+void monPrinDanied(){
+  if (printDanied && millis() - daniedTime >= 5000) {
+    printDanied = false;
+    printData();
   }
 }
 
